@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>Tetris mit Phaser – Score, Vorschau & Game Over</title>
+  <style>
+    body {
+      margin: 0;
+      background-color: #000;
+    }
+    canvas {
+      display: block;
+      margin: 0 auto;
+      background-color: #111;
+    }
+  </style>
+</head>
+<body>
+  <!-- Phaser 3 über CDN einbinden -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3/dist/phaser.min.js"></script>
+  <script>
+    // Gesamtbreite: 320 (Spielfeld) + 160 (Sidebar) = 480 Pixel
+    const config = {
+      type: Phaser.AUTO,
+      width: 480,
+      height: 640,
+      backgroundColor: '#111',
+      scene: {
+        preload: preload,
+        create: create,
+        update: update
+      }
+    };
+
+    const game = new Phaser.Game(config);
+
+    // Spielfeld-Konstanten
+    const COLS = 10;
+    const ROWS = 20;
+    const BLOCK_SIZE = 32;
+    const dropInterval = 500; // ms pro Zellen-Fall
+
+    // Globale Variablen
+    let board;
+    let currentPiece;
+    let nextPiece; // für die Vorschau
+    let score = 0;
+    let scoreText, nextText, gameOverText, restartButton;
+    let graphics, previewGraphics;
+    let keyLeft, keyRight, keyDown, keyUp;
+    let gameOver = false;  // Spielstatus
+
+    // Definition der Tetrominoes als 2D-Arrays
+    const tetrominoes = {
+      I: [
+        [0, 0, 0, 0],
+        [1, 1, 1, 1],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0]
+      ],
+      J: [
+        [1, 0, 0],
+        [1, 1, 1],
+        [0, 0, 0]
+      ],
+      L: [
+        [0, 0, 1],
+        [1, 1, 1],
+        [0, 0, 0]
+      ],
+      O: [
+        [1, 1],
+        [1, 1]
+      ],
+      S: [
+        [0, 1, 1],
+        [1, 1, 0],
+        [0, 0, 0]
+      ],
+      T: [
+        [0, 1, 0],
+        [1, 1, 1],
+        [0, 0, 0]
+      ],
+      Z: [
+        [1, 1, 0],
+        [0, 1, 1],
+        [0, 0, 0]
+      ]
+    };
+
+    // Farben der Tetrominoes (Hexwerte)
+    const colors = {
+      I: 0x00ffff,
+      J: 0x0000ff,
+      L: 0xffa500,
+      O: 0xffff00,
+      S: 0x00ff00,
+      T: 0xff00ff,
+      Z: 0xff0000
+    };
+
+    function preload() {
+      // Keine externen Assets – wir zeichnen direkt
+    }
+
+    function create() {
+      // Reset der Spielvariablen beim (Neustart) des Spiels
+      score = 0;
+      gameOver = false;
+
+      // Spielfeld (2D-Array) initialisieren
+      board = [];
+      for (let y = 0; y < ROWS; y++) {
+        board[y] = [];
+        for (let x = 0; x < COLS; x++) {
+          board[y][x] = 0;
+        }
+      }
+
+      // Tastatursteuerung
+      keyLeft  = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT);
+      keyRight = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.RIGHT);
+      keyDown  = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.DOWN);
+      keyUp    = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.UP);
+
+      // Erstelle zwei Graphics-Objekte: eins für das Spielfeld, eins für die Sidebar
+      graphics = this.add.graphics();
+      previewGraphics = this.add.graphics();
+
+      // Score-Text in der Sidebar (x ≥ 320)
+      scoreText = this.add.text(330, 20, "Score: 0", { font: '24px Arial', fill: '#fff' });
+      nextText = this.add.text(330, 80, "Nächstes:", { font: '24px Arial', fill: '#fff' });
+
+      // Game Over-Text (wird erst bei Game Over angezeigt)
+      gameOverText = this.add.text(config.width / 2, config.height / 2, "", { font: '48px Arial', fill: '#fff' });
+      gameOverText.setOrigin(0.5);
+
+      // Restart-Button, erscheint nach Game Over
+      restartButton = this.add.text(config.width / 2, config.height / 2 + 60, "Neu starten", { font: '32px Arial', fill: '#fff' });
+      restartButton.setOrigin(0.5);
+      restartButton.setInteractive();
+      restartButton.visible = false;
+      restartButton.on('pointerdown', () => {
+        this.scene.restart();
+      });
+
+      // Erzeuge den ersten Block und die Vorschau
+      spawnPiece();
+    }
+
+    function update(time, delta) {
+      // Falls Game Over, keine weitere Aktualisierung
+      if (gameOver) return;
+
+      // Berechne die Fallgeschwindigkeit in Pixel/ms
+      const fallSpeed = BLOCK_SIZE / dropInterval;
+      let effectiveDelta = delta;
+      if (keyDown.isDown) {
+        effectiveDelta *= 5;
+      }
+
+      // Prüfen, ob der nächste Schritt im Gitter möglich ist
+      if (!isValidMove(currentPiece.shape, currentPiece.x, currentPiece.y + 1)) {
+        currentPiece.fallOffset = 0; // Fixierung exakt im Raster
+        fixPiece();
+        clearLines();
+        spawnPiece();
+        // Falls Game Over in spawnPiece ausgelöst wurde, wird update beim nächsten Aufruf abgebrochen
+      } else {
+        // Flüssiges Fallen: fallOffset in Pixeln akkumulieren
+        currentPiece.fallOffset += fallSpeed * effectiveDelta;
+        while (currentPiece.fallOffset >= BLOCK_SIZE) {
+          currentPiece.y++;
+          currentPiece.fallOffset -= BLOCK_SIZE;
+        }
+      }
+
+      // Links-/Rechts-Bewegung und Rotation (nur beim ersten Drücken)
+      if (Phaser.Input.Keyboard.JustDown(keyLeft)) {
+        if (isValidMove(currentPiece.shape, currentPiece.x - 1, currentPiece.y)) {
+          currentPiece.x--;
+        }
+      }
+      if (Phaser.Input.Keyboard.JustDown(keyRight)) {
+        if (isValidMove(currentPiece.shape, currentPiece.x + 1, currentPiece.y)) {
+          currentPiece.x++;
+        }
+      }
+      if (Phaser.Input.Keyboard.JustDown(keyUp)) {
+        rotatePiece();
+      }
+
+      drawBoard();
+      drawPreview();
+    }
+
+    // Erzeugt den aktuellen Tetromino aus der Vorschau und erstellt einen neuen nächsten Block
+    function spawnPiece() {
+      // Falls bereits ein "nächster" Block existiert, wird dieser zum aktuellen
+      if (nextPiece) {
+        currentPiece = {
+          shape: nextPiece.shape,
+          x: Math.floor(COLS / 2) - Math.floor(nextPiece.shape[0].length / 2),
+          y: 0,
+          fallOffset: 0,
+          color: nextPiece.color
+        };
+      } else {
+        // Beim allerersten Mal: zufällig wählen
+        const keys = Object.keys(tetrominoes);
+        const rand = keys[Phaser.Math.Between(0, keys.length - 1)];
+        currentPiece = {
+          shape: tetrominoes[rand],
+          x: Math.floor(COLS / 2) - Math.floor(tetrominoes[rand][0].length / 2),
+          y: 0,
+          fallOffset: 0,
+          color: colors[rand]
+        };
+      }
+
+      // Prüfe, ob der neu erzeugte Block überhaupt platziert werden kann.
+      // Ist dies nicht der Fall, endet das Spiel.
+      if (!isValidMove(currentPiece.shape, currentPiece.x, currentPiece.y)) {
+        gameOver = true;
+        gameOverText.setText("Game Over");
+        restartButton.visible = true;
+        return;
+      }
+
+      // Erzeuge den nächsten Block für die Vorschau
+      const keys = Object.keys(tetrominoes);
+      const rand = keys[Phaser.Math.Between(0, keys.length - 1)];
+      nextPiece = {
+        shape: tetrominoes[rand],
+        color: colors[rand]
+      };
+    }
+
+    // Dreht die aktuelle Figur
+    function rotatePiece() {
+      const rotated = rotateMatrix(currentPiece.shape);
+      if (isValidMove(rotated, currentPiece.x, currentPiece.y)) {
+        currentPiece.shape = rotated;
+      }
+    }
+
+    // Rotiert eine quadratische Matrix (Tetromino) im Uhrzeigersinn
+    function rotateMatrix(matrix) {
+      const N = matrix.length;
+      let result = [];
+      for (let i = 0; i < N; i++) {
+        result[i] = [];
+        for (let j = 0; j < N; j++) {
+          result[i][j] = matrix[N - j - 1][i];
+        }
+      }
+      return result;
+    }
+
+    // Prüft, ob die Bewegung gültig ist (auf Gitterbasis)
+    function isValidMove(shape, posX, posY) {
+      for (let y = 0; y < shape.length; y++) {
+        for (let x = 0; x < shape[y].length; x++) {
+          if (shape[y][x]) {
+            const newX = posX + x;
+            const newY = posY + y;
+            // Grenzen prüfen
+            if (newX < 0 || newX >= COLS || newY >= ROWS) {
+              return false;
+            }
+            // Kollision mit fixierten Blöcken
+            if (newY >= 0 && board[newY][newX] !== 0) {
+              return false;
+            }
+          }
+        }
+      }
+      return true;
+    }
+
+    // Fixiert die aktuelle Figur im Spielfeld
+    function fixPiece() {
+      const shape = currentPiece.shape;
+      for (let y = 0; y < shape.length; y++) {
+        for (let x = 0; x < shape[y].length; x++) {
+          if (shape[y][x]) {
+            const boardX = currentPiece.x + x;
+            const boardY = currentPiece.y + y;
+            if (boardY >= 0) {
+              board[boardY][boardX] = currentPiece.color;
+            }
+          }
+        }
+      }
+    }
+
+    // Überprüft das Spielfeld, löscht volle Reihen und erhöht dabei den Score
+    function clearLines() {
+      let linesCleared = 0;
+      for (let y = ROWS - 1; y >= 0; y--) {
+        let full = true;
+        for (let x = 0; x < COLS; x++) {
+          if (board[y][x] === 0) {
+            full = false;
+            break;
+          }
+        }
+        if (full) {
+          board.splice(y, 1);
+          board.unshift(new Array(COLS).fill(0));
+          linesCleared++;
+          y++; // Gleiche Zeile erneut prüfen
+        }
+      }
+      if (linesCleared > 0) {
+        score += linesCleared * 100;
+        scoreText.setText("Score: " + score);
+        
+        // Weiterleitung, wenn Score 2000 oder mehr erreicht wird
+        if (score >= 2000) {
+          window.location.href = "https://pathologie.my.canva.site/";
+        }
+      }
+    }
+
+    // Zeichnet das Spielfeld (linker Bereich)
+    function drawBoard() {
+      graphics.clear();
+      // Hintergrund des Spielfelds
+      graphics.fillStyle(0x111111, 1);
+      graphics.fillRect(0, 0, 320, 640);
+
+      // Fixierte Blöcke zeichnen
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          if (board[y][x] !== 0) {
+            graphics.fillStyle(board[y][x], 1);
+            graphics.fillRect(x * BLOCK_SIZE, y * BLOCK_SIZE, BLOCK_SIZE - 1, BLOCK_SIZE - 1);
+          }
+        }
+      }
+
+      // Die fallende Figur (inklusive fallOffset) zeichnen
+      const shape = currentPiece.shape;
+      for (let y = 0; y < shape.length; y++) {
+        for (let x = 0; x < shape[y].length; x++) {
+          if (shape[y][x]) {
+            graphics.fillStyle(currentPiece.color, 1);
+            graphics.fillRect(
+              (currentPiece.x + x) * BLOCK_SIZE,
+              currentPiece.y * BLOCK_SIZE + currentPiece.fallOffset + y * BLOCK_SIZE,
+              BLOCK_SIZE - 1,
+              BLOCK_SIZE - 1
+            );
+          }
+        }
+      }
+    }
+
+    // Zeichnet die Sidebar (Vorschau und Hintergrund)
+    function drawPreview() {
+      previewGraphics.clear();
+      // Hintergrund der Sidebar
+      previewGraphics.fillStyle(0x222222, 1);
+      previewGraphics.fillRect(320, 0, 160, 640);
+
+      // Vorschau des nächsten Tetromino:
+      // Vorschau-Bereich: 4×4 Blöcke, zentriert
+      let previewAreaX = 340;
+      let previewAreaY = 120;
+      let shape = nextPiece.shape;
+      let shapeWidth = shape[0].length;
+      let shapeHeight = shape.length;
+      let offsetX = previewAreaX + ((4 - shapeWidth) * BLOCK_SIZE) / 2;
+      let offsetY = previewAreaY + ((4 - shapeHeight) * BLOCK_SIZE) / 2;
+
+      for (let y = 0; y < shapeHeight; y++) {
+        for (let x = 0; x < shapeWidth; x++) {
+          if (shape[y][x]) {
+            previewGraphics.fillStyle(nextPiece.color, 1);
+            previewGraphics.fillRect(offsetX + x * BLOCK_SIZE, offsetY + y * BLOCK_SIZE, BLOCK_SIZE - 1, BLOCK_SIZE - 1);
+          }
+        }
+      }
+    }
+  </script>
+</body>
+</html>
